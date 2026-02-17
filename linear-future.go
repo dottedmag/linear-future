@@ -3,30 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
-	"regexp"
-	"slices"
+	"sort"
 	"strings"
 	"time"
 )
 
-var titleDateRx = regexp.MustCompile(`^@(\d{4}-\d{2}-\d{2})\s+`)
-
-func extractDateFromTitle(title string) (_ time.Time, retFound bool) {
-	m := titleDateRx.FindStringSubmatch(title)
-	if m == nil {
-		return time.Time{}, false
-	}
-	t, err := time.Parse("2006-01-02", m[1])
-	if err != nil {
-		return time.Time{}, false
-	}
-	return t, true
-}
-
-func handleIssues(token string, teamNames []string, labelName string) int {
+func handleIssues(token string, teamNames []string) int {
 	retCode := 0
 	for _, teamName := range teamNames {
-		if err := handleTeamIssues(token, teamName, labelName); err != nil {
+		if err := handleTeamIssues(token, teamName); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			retCode = 1
 		}
@@ -34,44 +19,15 @@ func handleIssues(token string, teamNames []string, labelName string) int {
 	return retCode
 }
 
-func handleTeamIssues(token string, teamName string, labelName string) error {
+func handleTeamIssues(token string, teamName string) error {
 	q := q{token}
-	teamID, labelID, err := getTeamAndLabel(q, teamName, labelName)
+	teamID, err := getTeamID(q, teamName)
 	if err != nil {
-		return fmt.Errorf("failed to resolve team or label: %w", err)
+		return fmt.Errorf("failed to resolve team: %w", err)
 	}
 	fmt.Printf("Team %q resolved to ID %s\n", teamName, teamID)
-	fmt.Printf("Label %q resolved to ID %s\n", labelName, labelID)
 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
-
-	isss, err := getTeamIssues(q, teamID)
-	if err != nil {
-		return fmt.Errorf("failed to get team issues: %w", err)
-	}
-	for _, iss := range isss {
-		if !slices.Contains(iss.labels, labelID) {
-			continue
-		}
-		if t, found := extractDateFromTitle(iss.title); found {
-			if !t.After(today) {
-				fmt.Printf("Issue %q is no longer in the future, removing the label\n", iss.title)
-				if err := removeLabel(q, iss.id, labelID); err != nil {
-					return fmt.Errorf("failed to remove label from issue %q: %w", iss.title, err)
-				}
-			}
-		} else {
-			if !strings.HasPrefix(iss.title, "@? ") {
-				fmt.Printf("Issue %q has malformed/missing date, highlighting it and removing the label\n", iss.title)
-				if err := updateTitle(q, iss.id, "@? "+iss.title); err != nil {
-					return fmt.Errorf("failed to update title of issue %q: %w", iss.title, err)
-				}
-				if err := removeLabel(q, iss.id, labelID); err != nil {
-					return fmt.Errorf("failed to remove label from issue %q: %w", iss.title, err)
-				}
-			}
-		}
-	}
 	if err := createRecurringIssuesFromTemplates(q, teamID, today); err != nil {
 		return fmt.Errorf("failed to create recurring issues from templates: %w", err)
 	}
@@ -89,7 +45,7 @@ func createRecurringIssuesFromTemplates(q q, teamID string, today time.Time) err
 		if tmpl.teamID != teamID {
 			continue
 		}
-		if templateMatchesRecurrence(tmpl.name, today) {
+		if templateMatchesSchedule(tmpl.description, today) {
 			dueTemplates = append(dueTemplates, tmpl)
 		}
 	}
@@ -108,11 +64,122 @@ func createRecurringIssuesFromTemplates(q q, teamID string, today time.Time) err
 			continue
 		}
 		fmt.Printf("Creating issue from template %q\n", tmpl.name)
-		if err := createIssueFromTemplate(q, tmpl.id, teamID); err != nil {
+		issueID, err := createIssueFromTemplate(q, tmpl.id, teamID)
+		if err != nil {
 			return err
+		}
+		if err := setupSubIssueDependencies(q, issueID); err != nil {
+			return fmt.Errorf("setting up sub-issue dependencies for template %q: %w", tmpl.name, err)
 		}
 	}
 	return nil
+}
+
+func getTemplateCreatedIssuesForDay(q q, teamID string, dayStart time.Time) (map[string]bool, error) {
+	fields, err := getIssueTemplateFields(q)
+	if err != nil || len(fields) == 0 {
+		fields = staticIssueTemplateFields()
+	} else {
+		fields = appendIssueTemplateFields(fields, staticIssueTemplateFields())
+	}
+
+	var lastErr error
+	onlyUnknownFields := true
+	for _, field := range fields {
+		created, err := getTemplateCreatedIssuesForDayWithField(q, teamID, dayStart, field)
+		if err == nil {
+			return created, nil
+		}
+		lastErr = err
+		if !isUnknownFieldError(err) {
+			onlyUnknownFields = false
+			return nil, err
+		}
+	}
+
+	if onlyUnknownFields {
+		return nil, fmt.Errorf("no issue template link field found on Issue; cannot enforce one-per-day")
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no issue template link field found on Issue; cannot enforce one-per-day")
+}
+
+func getIssueTemplateFields(q q) ([]issueTemplateField, error) {
+	rawFields, err := introspectIssueFields(q)
+	if err != nil {
+		return nil, err
+	}
+
+	var fields []issueTemplateField
+	for _, f := range rawFields {
+		lowerName := strings.ToLower(f.name)
+		lowerType := strings.ToLower(f.leafName)
+		if !strings.Contains(lowerName, "template") && !strings.Contains(lowerType, "template") {
+			continue
+		}
+		switch f.leafKind {
+		case "OBJECT":
+			fields = append(fields, issueTemplateField{
+				name:      f.name,
+				selection: fmt.Sprintf("%s { id }", f.name),
+			})
+		case "SCALAR":
+			if f.leafName == "ID" || f.leafName == "String" {
+				fields = append(fields, issueTemplateField{
+					name:      f.name,
+					selection: f.name,
+				})
+			}
+		}
+	}
+
+	sort.Slice(fields, func(i, j int) bool {
+		return templateFieldPriority(fields[i].name) < templateFieldPriority(fields[j].name)
+	})
+
+	return fields, nil
+}
+
+func staticIssueTemplateFields() []issueTemplateField {
+	return []issueTemplateField{
+		{name: "template", selection: "template { id }"},
+		{name: "createdFromTemplate", selection: "createdFromTemplate { id }"},
+		{name: "templateId", selection: "templateId"},
+		{name: "createdFromTemplateId", selection: "createdFromTemplateId"},
+		{name: "createdFrom", selection: "createdFrom { id }"},
+	}
+}
+
+func appendIssueTemplateFields(fields []issueTemplateField, extra []issueTemplateField) []issueTemplateField {
+	seen := make(map[string]bool, len(fields))
+	for _, f := range fields {
+		seen[f.name] = true
+	}
+	for _, f := range extra {
+		if !seen[f.name] {
+			fields = append(fields, f)
+		}
+	}
+	return fields
+}
+
+func templateFieldPriority(name string) int {
+	switch strings.ToLower(name) {
+	case "template":
+		return 0
+	case "createdfromtemplate":
+		return 1
+	case "templateid":
+		return 2
+	case "createdfromtemplateid":
+		return 3
+	case "createdfrom":
+		return 4
+	default:
+		return 100
+	}
 }
 
 func realMain() int {
@@ -124,7 +191,7 @@ func realMain() int {
 		fmt.Fprintf(os.Stderr, "Usage: LINEAR_API_KEY=lin_api_... linear-future <team name>\n")
 		return 2
 	}
-	return handleIssues(token, os.Args[1:], "Later")
+	return handleIssues(token, os.Args[1:])
 }
 
 func main() {

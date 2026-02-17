@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 )
@@ -80,81 +79,52 @@ func (q q) doWithStatus(query string, variables map[string]any) ([]byte, int, er
 	return body, resp.StatusCode, nil
 }
 
-func getTeamAndLabel(q q, teamName, labelName string) (retTeamID string, retLabelID string, _ error) {
-	query := `query GetTeamDataWithIssueLabels($teamName: String!, $labelName: String!) {
-            teams(filter: {name: {eq: $teamName}}) {
-                nodes {
-                    id
-                    labels(filter: {name: {eq: $labelName}}, first: 1) {
-                        nodes {
-                            id
-                        }
-                    }
-                }
-            }
-        }`
-	body, err := q.do(query, map[string]any{"teamName": teamName, "labelName": labelName})
+func getTeamID(q q, teamName string) (string, error) {
+	query := `query GetTeam($teamName: String!) {
+		teams(filter: {name: {eq: $teamName}}) {
+			nodes { id }
+		}
+	}`
+	body, err := q.do(query, map[string]any{"teamName": teamName})
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 
 	var resp struct {
 		Data struct {
 			Teams struct {
 				Nodes []struct {
-					ID     string
-					Labels struct {
-						Nodes []struct {
-							ID string
-						}
-					}
+					ID string
 				}
 			}
 		}
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return "", "", err
+		return "", err
 	}
 	if len(resp.Data.Teams.Nodes) == 0 {
-		return "", "", fmt.Errorf("failed to resolve team name %q to an ID: no team found", teamName)
-	}
-	if len(resp.Data.Teams.Nodes[0].Labels.Nodes) == 0 {
-		return "", "", fmt.Errorf("failed to label name %q to an ID: no label found", teamName)
+		return "", fmt.Errorf("failed to resolve team name %q to an ID: no team found", teamName)
 	}
 
-	return resp.Data.Teams.Nodes[0].ID, resp.Data.Teams.Nodes[0].Labels.Nodes[0].ID, nil
+	return resp.Data.Teams.Nodes[0].ID, nil
 }
 
-type iss struct {
-	id     string
-	title  string
-	labels []string
-}
+// searchTeamIssues searches for issues in a team whose title contains the given string.
+func searchTeamIssues(q q, teamID, titleContains string) ([]subIssue, error) {
+	query := `query SearchIssues($teamID: ID!, $title: StringComparator!, $after: String) {
+		issues(filter: { team: {id: {eq: $teamID}}, title: $title }, first: 50, after: $after) {
+			nodes { id title }
+			pageInfo { hasNextPage endCursor }
+		}
+	}`
 
-func getTeamIssues(q q, teamID string) ([]iss, error) {
-	query := `query GetIssues($teamID: ID!, $after: String) {
-            issues(filter: { team: {id: {eq: $teamID}}}, first: 20, after: $after) {
-                        nodes {
-                            id
-                            title
-                            labels {
-                                nodes {
-                                    id
-                                }
-                            }
-                        }
-                        pageInfo {
-                            hasNextPage
-                            endCursor
-                        }
-                    }
-        }`
-
-	var out []iss
-
+	var out []subIssue
 	cursor := ""
 	for {
-		vars := map[string]any{"teamID": teamID}
+		vars := map[string]any{
+			"teamID": teamID,
+			"title":  map[string]any{"contains": titleContains},
+		}
 		if cursor != "" {
 			vars["after"] = cursor
 		}
@@ -167,13 +137,8 @@ func getTeamIssues(q q, teamID string) ([]iss, error) {
 			Data struct {
 				Issues struct {
 					Nodes []struct {
-						ID     string
-						Title  string
-						Labels struct {
-							Nodes []struct {
-								ID string
-							}
-						}
+						ID    string
+						Title string
 					}
 					PageInfo struct {
 						HasNextPage bool
@@ -187,11 +152,7 @@ func getTeamIssues(q q, teamID string) ([]iss, error) {
 		}
 
 		for _, n := range resp.Data.Issues.Nodes {
-			is := iss{id: n.ID, title: n.Title}
-			for _, l := range n.Labels.Nodes {
-				is.labels = append(is.labels, l.ID)
-			}
-			out = append(out, is)
+			out = append(out, subIssue{id: n.ID, title: n.Title})
 		}
 
 		if !resp.Data.Issues.PageInfo.HasNextPage {
@@ -233,47 +194,11 @@ func updateTitle(q q, issueID, newTitle string) error {
 	return nil
 }
 
-func removeLabel(q q, issueID, labelID string) error {
-	query := `
-		mutation ($issueId: String!, $labelId: String!) {
-			issueRemoveLabel(id: $issueId, labelId: $labelId) {
-				success
-			}
-		}
-	`
-
-	variables := map[string]any{
-		"issueId": issueID,
-		"labelId": labelID,
-	}
-
-	body, err := q.do(query, variables)
-	if err != nil {
-		return err
-	}
-
-	var resp struct {
-		Data struct {
-			IssueRemoveLabel struct {
-				Success bool `json:"success"`
-			} `json:"issueRemoveLabel"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return err
-	}
-
-	if !resp.Data.IssueRemoveLabel.Success {
-		return fmt.Errorf("failed to remove label")
-	}
-
-	return nil
-}
-
 type issueTemplate struct {
-	id     string
-	name   string
-	teamID string
+	id          string
+	name        string
+	description string
+	teamID      string
 }
 
 func getTemplates(q q) ([]issueTemplate, error) {
@@ -289,6 +214,7 @@ func listTemplatesLegacy(q q) ([]issueTemplate, error) {
 		templates {
 			id
 			name
+			description
 			team {
 				id
 			}
@@ -303,9 +229,10 @@ func listTemplatesLegacy(q q) ([]issueTemplate, error) {
 	var resp struct {
 		Data struct {
 			Templates []struct {
-				ID   string
-				Name string
-				Team struct {
+				ID          string
+				Name        string
+				Description string
+				Team        struct {
 					ID string
 				}
 			}
@@ -323,7 +250,7 @@ func listTemplatesLegacy(q q) ([]issueTemplate, error) {
 
 	templates := make([]issueTemplate, 0, len(resp.Data.Templates))
 	for _, t := range resp.Data.Templates {
-		templates = append(templates, issueTemplate{id: t.ID, name: t.Name, teamID: t.Team.ID})
+		templates = append(templates, issueTemplate{id: t.ID, name: t.Name, description: t.Description, teamID: t.Team.ID})
 	}
 	return templates, nil
 }
@@ -334,6 +261,7 @@ func listTemplatesConnection(q q) ([]issueTemplate, error) {
 			nodes {
 				id
 				name
+				description
 				team {
 					id
 				}
@@ -362,9 +290,10 @@ func listTemplatesConnection(q q) ([]issueTemplate, error) {
 			Data struct {
 				Templates struct {
 					Nodes []struct {
-						ID   string
-						Name string
-						Team struct {
+						ID          string
+						Name        string
+						Description string
+						Team        struct {
 							ID string
 						}
 					}
@@ -386,7 +315,7 @@ func listTemplatesConnection(q q) ([]issueTemplate, error) {
 		}
 
 		for _, t := range resp.Data.Templates.Nodes {
-			templates = append(templates, issueTemplate{id: t.ID, name: t.Name, teamID: t.Team.ID})
+			templates = append(templates, issueTemplate{id: t.ID, name: t.Name, description: t.Description, teamID: t.Team.ID})
 		}
 
 		if !resp.Data.Templates.PageInfo.HasNextPage {
@@ -410,66 +339,20 @@ func isUnknownFieldError(err error) bool {
 	return ok
 }
 
-func getTemplateCreatedIssuesForDay(q q, teamID string, dayStart time.Time) (map[string]bool, error) {
-	fields, err := getIssueTemplateFields(q)
-	if err != nil || len(fields) == 0 {
-		fields = staticIssueTemplateFields()
-	} else {
-		fields = appendIssueTemplateFields(fields, staticIssueTemplateFields())
-	}
-
-	var lastErr error
-	onlyUnknownFields := true
-	for _, field := range fields {
-		created, err := getTemplateCreatedIssuesForDayWithField(q, teamID, dayStart, field)
-		if err == nil {
-			return created, nil
-		}
-		lastErr = err
-		if !isUnknownFieldError(err) {
-			onlyUnknownFields = false
-			return nil, err
-		}
-	}
-
-	if onlyUnknownFields {
-		return nil, fmt.Errorf("no issue template link field found on Issue; cannot enforce one-per-day")
-	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no issue template link field found on Issue; cannot enforce one-per-day")
-}
-
 type issueTemplateField struct {
 	name      string
 	selection string
 }
 
-func staticIssueTemplateFields() []issueTemplateField {
-	return []issueTemplateField{
-		{name: "template", selection: "template { id }"},
-		{name: "createdFromTemplate", selection: "createdFromTemplate { id }"},
-		{name: "templateId", selection: "templateId"},
-		{name: "createdFromTemplateId", selection: "createdFromTemplateId"},
-		{name: "createdFrom", selection: "createdFrom { id }"},
-	}
+// introspectedField represents a field discovered via GraphQL schema introspection.
+type introspectedField struct {
+	name     string
+	leafKind string // after unwrapping NON_NULL/LIST
+	leafName string
 }
 
-func appendIssueTemplateFields(fields []issueTemplateField, extra []issueTemplateField) []issueTemplateField {
-	seen := make(map[string]bool, len(fields))
-	for _, f := range fields {
-		seen[f.name] = true
-	}
-	for _, f := range extra {
-		if !seen[f.name] {
-			fields = append(fields, f)
-		}
-	}
-	return fields
-}
-
-func getIssueTemplateFields(q q) ([]issueTemplateField, error) {
+// introspectIssueFields returns all fields on the Issue type via schema introspection.
+func introspectIssueFields(q q) ([]introspectedField, error) {
 	query := `query IssueTemplateFields {
 		__type(name: "Issue") {
 			fields {
@@ -499,6 +382,18 @@ func getIssueTemplateFields(q q) ([]issueTemplateField, error) {
 		return nil, err
 	}
 
+	type gqlTypeRef struct {
+		Kind   string      `json:"kind"`
+		Name   string      `json:"name"`
+		OfType *gqlTypeRef `json:"ofType"`
+	}
+	unwrap := func(ref *gqlTypeRef) *gqlTypeRef {
+		for ref != nil && (ref.Kind == "NON_NULL" || ref.Kind == "LIST") {
+			ref = ref.OfType
+		}
+		return ref
+	}
+
 	var resp struct {
 		Data struct {
 			Type *struct {
@@ -522,68 +417,15 @@ func getIssueTemplateFields(q q) ([]issueTemplateField, error) {
 		return nil, fmt.Errorf("schema introspection failed: Issue type missing")
 	}
 
-	fields := make([]issueTemplateField, 0)
-	for _, field := range resp.Data.Type.Fields {
-		lowerName := strings.ToLower(field.Name)
-		leaf := unwrapType(&field.Type)
+	var out []introspectedField
+	for _, f := range resp.Data.Type.Fields {
+		leaf := unwrap(&f.Type)
 		if leaf == nil {
 			continue
 		}
-		lowerType := strings.ToLower(leaf.Name)
-		if !strings.Contains(lowerName, "template") && !strings.Contains(lowerType, "template") {
-			continue
-		}
-		switch leaf.Kind {
-		case "OBJECT":
-			fields = append(fields, issueTemplateField{
-				name:      field.Name,
-				selection: fmt.Sprintf("%s { id }", field.Name),
-			})
-		case "SCALAR":
-			if leaf.Name == "ID" || leaf.Name == "String" {
-				fields = append(fields, issueTemplateField{
-					name:      field.Name,
-					selection: field.Name,
-				})
-			}
-		}
+		out = append(out, introspectedField{name: f.Name, leafKind: leaf.Kind, leafName: leaf.Name})
 	}
-
-	sort.Slice(fields, func(i, j int) bool {
-		return templateFieldPriority(fields[i].name) < templateFieldPriority(fields[j].name)
-	})
-
-	return fields, nil
-}
-
-type gqlTypeRef struct {
-	Kind   string      `json:"kind"`
-	Name   string      `json:"name"`
-	OfType *gqlTypeRef `json:"ofType"`
-}
-
-func unwrapType(ref *gqlTypeRef) *gqlTypeRef {
-	for ref != nil && (ref.Kind == "NON_NULL" || ref.Kind == "LIST") {
-		ref = ref.OfType
-	}
-	return ref
-}
-
-func templateFieldPriority(name string) int {
-	switch strings.ToLower(name) {
-	case "template":
-		return 0
-	case "createdfromtemplate":
-		return 1
-	case "templateid":
-		return 2
-	case "createdfromtemplateid":
-		return 3
-	case "createdfrom":
-		return 4
-	default:
-		return 100
-	}
+	return out, nil
 }
 
 func getTemplateCreatedIssuesForDayWithField(q q, teamID string, dayStart time.Time, field issueTemplateField) (map[string]bool, error) {
@@ -686,7 +528,7 @@ func extractTemplateIDs(value any) []string {
 	return nil
 }
 
-func createIssueFromTemplate(q q, templateID, teamID string) error {
+func createIssueFromTemplate(q q, templateID, teamID string) (string, error) {
 	mutation := `
 	mutation IssueCreateFromTemplate($templateId: String!, $teamId: String!) {
 		issueCreate(input: {templateId: $templateId, teamId: $teamId}) {
@@ -702,14 +544,105 @@ func createIssueFromTemplate(q q, templateID, teamID string) error {
 	}
 	body, err := q.do(mutation, variables)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var resp struct {
 		Data struct {
 			IssueCreate struct {
 				Success bool `json:"success"`
+				Issue   struct {
+					ID string `json:"id"`
+				} `json:"issue"`
 			} `json:"issueCreate"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", err
+	}
+	if len(resp.Errors) > 0 {
+		return "", fmt.Errorf("issueCreate failed: %s", resp.Errors[0].Message)
+	}
+	if !resp.Data.IssueCreate.Success {
+		return "", fmt.Errorf("failed to create issue from template %s", templateID)
+	}
+	return resp.Data.IssueCreate.Issue.ID, nil
+}
+
+// subIssue represents a sub-issue fetched from the API.
+type subIssue struct {
+	id    string
+	title string
+}
+
+// getChildIssues fetches all sub-issues (children) of the given parent issue.
+func getChildIssues(q q, parentID string) ([]subIssue, error) {
+	query := `query GetChildren($issueId: String!) {
+		issue(id: $issueId) {
+			children(first: 50) {
+				nodes {
+					id
+					title
+				}
+			}
+		}
+	}`
+
+	body, err := q.do(query, map[string]any{"issueId": parentID})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Data struct {
+			Issue struct {
+				Children struct {
+					Nodes []struct {
+						ID    string
+						Title string
+					}
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+
+	var out []subIssue
+	for _, n := range resp.Data.Issue.Children.Nodes {
+		out = append(out, subIssue{id: n.ID, title: n.Title})
+	}
+	return out, nil
+}
+
+// createBlocksRelation creates a "blocks" relation: blocker blocks blocked.
+func createBlocksRelation(q q, blockerID, blockedID string) error {
+	mutation := `mutation CreateRelation($input: IssueRelationCreateInput!) {
+		issueRelationCreate(input: $input) {
+			success
+		}
+	}`
+
+	input := map[string]any{
+		"issueId":        blockerID,
+		"relatedIssueId": blockedID,
+		"type":           "blocks",
+	}
+
+	body, err := q.do(mutation, map[string]any{"input": input})
+	if err != nil {
+		return err
+	}
+
+	var resp struct {
+		Data struct {
+			IssueRelationCreate struct {
+				Success bool `json:"success"`
+			} `json:"issueRelationCreate"`
 		} `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
@@ -719,10 +652,10 @@ func createIssueFromTemplate(q q, templateID, teamID string) error {
 		return err
 	}
 	if len(resp.Errors) > 0 {
-		return fmt.Errorf("issueCreate failed: %s", resp.Errors[0].Message)
+		return fmt.Errorf("issueRelationCreate failed: %s", resp.Errors[0].Message)
 	}
-	if !resp.Data.IssueCreate.Success {
-		return fmt.Errorf("failed to create issue from template %s", templateID)
+	if !resp.Data.IssueRelationCreate.Success {
+		return fmt.Errorf("issueRelationCreate returned success=false")
 	}
 	return nil
 }

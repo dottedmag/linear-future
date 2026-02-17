@@ -1,16 +1,32 @@
 # linear-future
 
-Future-dated tickets in Linear.
+Creates issues from Linear templates based on schedule lines in the template description.
 
-For every future-dated ticket:
-- Add label "Later"
-- Add @YYYY-MM-DD prefix to the title
+For one-time issues, use `At:` with a specific date:
 
-Run this tool every day, it will remove "Later" labels from any ticket that is no longer in the future.
+```
+At: 2025-06-15
+```
 
-It also creates issues from templates based on recurrence tags in the template name. Supported tags:
-- `@Daily`
-- `@Mon @Tue` or `@Mon,Tue` (weekly)
-- `@1` `@3` `@-1` (first/third/last day of every month)
-- `@Jan1` `@Jan3` `@Jan-1` (first/third/last day of every January)
-- `@Jan,Jun1` (first day of every January and June)
+For recurring issues, use `Recurrence:` with a pattern:
+
+```
+Recurrence: daily
+Recurrence: Mon
+Recurrence: Tue
+Recurrence: 1
+Recurrence: 15
+Recurrence: last
+Recurrence: Jan 1
+Recurrence: Jun last
+```
+
+Each recurrence value is one of:
+- `daily` — every day
+- A three-letter weekday (`Mon`, `Tue`, etc.) — that day every week
+- A number `1`–`31` — that day every month
+- `last` — last day of every month
+- A three-letter month + number (`Jan 1`) — that day in that month
+- A three-letter month + `last` (`Jun last`) — last day of that month
+
+Multiple lines (of any kind) are OR'd — any match triggers issue creation.

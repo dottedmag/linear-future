@@ -13,7 +13,7 @@ func runListTemplates(token string) int {
 		return 1
 	}
 	for _, t := range templates {
-		fmt.Printf("%s\t%s\t%s\n", t.id, t.teamID, t.name)
+		fmt.Printf("%s\t%s\t%s\t%s\n", t.id, t.teamID, t.name, t.description)
 	}
 	return 0
 }
