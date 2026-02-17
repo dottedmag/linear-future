@@ -77,7 +77,7 @@ func (s schedule) matches(date time.Time) bool {
 // parseSchedules extracts all valid schedule entries from a template description.
 func parseSchedules(description string) []schedule {
 	var schedules []schedule
-	for _, line := range strings.Split(description, "\n") {
+	for _, line := range strings.Split(description, "|") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
 

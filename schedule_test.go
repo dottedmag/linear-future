@@ -12,7 +12,7 @@ func date(year int, month time.Month, day int) time.Time {
 }
 
 func TestTemplateMatchesSchedule_Daily(t *testing.T) {
-	desc := "Some text\nRecurrence: daily\nMore text"
+	desc := "Some text|Recurrence: daily|More text"
 	assert.True(t, templateMatchesSchedule(desc, date(2025, time.January, 15)))
 }
 
@@ -54,7 +54,7 @@ func TestTemplateMatchesSchedule_MonthLast(t *testing.T) {
 }
 
 func TestTemplateMatchesSchedule_MultipleLines(t *testing.T) {
-	desc := "Recurrence: Mon\nRecurrence: Fri"
+	desc := "Recurrence: Mon|Recurrence: Fri"
 	mon := date(2025, time.January, 13) // Monday
 	fri := date(2025, time.January, 17) // Friday
 	wed := date(2025, time.January, 15) // Wednesday
@@ -91,7 +91,7 @@ func TestTemplateMatchesSchedule_AtCaseInsensitive(t *testing.T) {
 }
 
 func TestTemplateMatchesSchedule_AtWithRecurrence(t *testing.T) {
-	desc := "At: 2025-06-01\nRecurrence: Mon"
+	desc := "At: 2025-06-01|Recurrence: Mon"
 	// 2025-06-01 is a Sunday
 	assert.True(t, templateMatchesSchedule(desc, date(2025, time.June, 1)))
 	// 2025-06-02 is a Monday
