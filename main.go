@@ -1,21 +1,32 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 )
 
 func realMain() int {
+	listTemplates := flag.Bool("list-templates", false, "List all templates")
+	triggerDates := flag.Bool("trigger-dates", false, "Show upcoming trigger dates for all templates")
+	flag.Parse()
+
 	token := os.Getenv("LINEAR_API_KEY")
-	if len(os.Args) == 2 && os.Args[1] == "--list-templates" {
+
+	if *listTemplates {
 		return runListTemplates(token)
 	}
-	if token == "" || len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: LINEAR_API_KEY=lin_api_... linear-future <team name>\n")
+	if *triggerDates {
+		return runTriggerDates(token)
+	}
+
+	if token == "" || flag.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: LINEAR_API_KEY=lin_api_... linear-future [flags] <team name>...\n")
+		flag.PrintDefaults()
 		return 2
 	}
 	retCode := 0
-	for _, teamName := range os.Args[1:] {
+	for _, teamName := range flag.Args() {
 		if err := createScheduledTeamIssues(token, teamName); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			retCode = 1

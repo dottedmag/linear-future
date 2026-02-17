@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -31,79 +32,138 @@ var monthMap = map[string]time.Month{
 	"dec": time.December,
 }
 
-func templateMatchesSchedule(description string, date time.Time) bool {
+type scheduleKind int
+
+const (
+	scheduleDaily scheduleKind = iota
+	scheduleWeekday
+	scheduleDayOfMonth
+	scheduleLastDayOfMonth
+	scheduleMonthDay
+	scheduleMonthLast
+	scheduleAt
+	scheduleMalformed
+)
+
+type schedule struct {
+	kind    scheduleKind
+	weekday time.Weekday // scheduleWeekday
+	day     int          // scheduleDayOfMonth, scheduleMonthDay
+	month   time.Month   // scheduleMonthDay, scheduleMonthLast
+	date    time.Time    // scheduleAt
+	raw     string       // scheduleMalformed
+}
+
+func (s schedule) String() string {
+	switch s.kind {
+	case scheduleDaily:
+		return "Daily"
+	case scheduleWeekday:
+		return fmt.Sprintf("Every %s", s.weekday)
+	case scheduleDayOfMonth:
+		return fmt.Sprintf("Day %d of every month", s.day)
+	case scheduleLastDayOfMonth:
+		return "Last day of every month"
+	case scheduleMonthDay:
+		return fmt.Sprintf("%s %d", s.month, s.day)
+	case scheduleMonthLast:
+		return fmt.Sprintf("Last day of %s", s.month)
+	case scheduleAt:
+		return fmt.Sprintf("Once on %s", s.date.Format("2006-01-02"))
+	case scheduleMalformed:
+		return fmt.Sprintf("MALFORMED: %s", s.raw)
+	default:
+		return "Unknown"
+	}
+}
+
+func (s schedule) matches(date time.Time) bool {
+	switch s.kind {
+	case scheduleDaily:
+		return true
+	case scheduleWeekday:
+		return date.Weekday() == s.weekday
+	case scheduleDayOfMonth:
+		return date.Day() == s.day
+	case scheduleLastDayOfMonth:
+		return date.Day() == lastDayOfMonth(date)
+	case scheduleMonthDay:
+		return date.Month() == s.month && date.Day() == s.day
+	case scheduleMonthLast:
+		return date.Month() == s.month && date.Day() == lastDayOfMonth(date)
+	case scheduleAt:
+		return date.Equal(s.date)
+	default:
+		return false
+	}
+}
+
+// parseSchedules extracts all valid schedule entries from a template description.
+func parseSchedules(description string) []schedule {
+	var schedules []schedule
 	for _, line := range strings.Split(description, "\n") {
 		line = strings.TrimSpace(line)
 		lower := strings.ToLower(line)
 
-		if strings.HasPrefix(lower, "recurrence:") {
-			value := strings.TrimSpace(line[len("recurrence:"):])
-			if value == "" {
-				continue
-			}
-			matches, valid := parseRecurrenceLine(value, date)
-			if valid && matches {
-				return true
-			}
-		}
-
-		if strings.HasPrefix(lower, "at:") {
-			value := strings.TrimSpace(line[len("at:"):])
-			t, err := time.Parse("2006-01-02", value)
-			if err != nil {
-				continue
-			}
-			if t.Equal(date) {
-				return true
-			}
+		if after, ok := strings.CutPrefix(lower, "recurrence:"); ok {
+			schedules = append(schedules, parseRecurrence(strings.TrimSpace(after), line))
+		} else if after, ok := strings.CutPrefix(lower, "at:"); ok {
+			schedules = append(schedules, parseAt(strings.TrimSpace(after), line))
 		}
 	}
-	return false
+	return schedules
 }
 
-func parseRecurrenceLine(value string, date time.Time) (matches, valid bool) {
+func parseRecurrence(value string, rawLine string) schedule {
 	lower := strings.ToLower(strings.TrimSpace(value))
-	if lower == "" {
-		return false, false
-	}
 
 	if lower == "daily" {
-		return true, true
+		return schedule{kind: scheduleDaily}
 	}
 
-	// Try as weekday
 	if wd, ok := weekdayMap[lower]; ok {
-		return date.Weekday() == wd, true
+		return schedule{kind: scheduleWeekday, weekday: wd}
 	}
 
-	// Try as "last"
 	if lower == "last" {
-		return date.Day() == lastDayOfMonth(date), true
+		return schedule{kind: scheduleLastDayOfMonth}
 	}
 
-	// Try as day number
 	if day, err := strconv.Atoi(lower); err == nil && day >= 1 && day <= 31 {
-		return date.Day() == day, true
+		return schedule{kind: scheduleDayOfMonth, day: day}
 	}
 
-	// Try as month + day ("Jan 1", "Jun last")
 	parts := strings.Fields(lower)
 	if len(parts) == 2 {
 		month, ok := monthMap[parts[0]]
 		if ok {
-			if date.Month() != month {
-				return false, true
-			}
 			if parts[1] == "last" {
-				return date.Day() == lastDayOfMonth(date), true
+				return schedule{kind: scheduleMonthLast, month: month}
 			}
 			if day, err := strconv.Atoi(parts[1]); err == nil && day >= 1 && day <= 31 {
-				return date.Day() == day, true
+				return schedule{kind: scheduleMonthDay, month: month, day: day}
 			}
 		}
 	}
 
-	return false, false
+	return schedule{kind: scheduleMalformed, raw: rawLine}
+}
+
+func parseAt(value string, rawLine string) schedule {
+	t, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return schedule{kind: scheduleMalformed, raw: rawLine}
+	}
+	return schedule{kind: scheduleAt, date: t}
+}
+
+func templateMatchesSchedule(description string, date time.Time) bool {
+	for _, s := range parseSchedules(description) {
+		if s.matches(date) {
+			return true
+		}
+	}
+	return false
 }
 
 func lastDayOfMonth(date time.Time) int {
