@@ -13,7 +13,7 @@ type subIssueProblem struct {
 }
 
 // validateSubIssuePrefixes checks sub-issue titles for structural problems:
-// duplicate IDs and dangling NEEDS references.
+// unparseable prefixes, duplicate IDs, and dangling DEPS references.
 func validateSubIssuePrefixes(titles []string) []subIssueProblem {
 	var problems []subIssueProblem
 	ids := map[int]bool{}
@@ -24,7 +24,11 @@ func validateSubIssuePrefixes(titles []string) []subIssueProblem {
 	}
 	var items []parsed
 	for _, title := range titles {
-		p := parseSubIssuePrefix(title)
+		p, err := parseSubIssuePrefix(title)
+		if err != nil {
+			problems = append(problems, subIssueProblem{title: title, problem: err.Error()})
+			continue
+		}
 		items = append(items, parsed{title: title, prefix: p})
 		if !p.hasPrefix {
 			continue
@@ -42,7 +46,7 @@ func validateSubIssuePrefixes(titles []string) []subIssueProblem {
 			if !ids[need] {
 				problems = append(problems, subIssueProblem{
 					title:   item.title,
-					problem: fmt.Sprintf("sub-issue %d NEEDS %d, but no sub-issue with that ID", item.prefix.id, need),
+					problem: fmt.Sprintf("sub-issue %d DEPS %d, but no sub-issue with that ID", item.prefix.id, need),
 				})
 			}
 		}
@@ -59,15 +63,21 @@ type subIssuePrefix struct {
 	hasPrefix bool  // whether the title had a prefix at all
 }
 
-// prefixRx matches the sub-issue prefix: 123(|REQ)?(|NEEDS456)* followed by a space and the rest of the title.
-var prefixRx = regexp.MustCompile(`^(\d+)((?:\|REQ)?(?:\|NEEDS\d+)*)\s+(.+)$`)
+// prefixRx matches the sub-issue prefix: 123(|REQ)?(|DEPS456)* followed by a space and the rest of the title.
+var prefixRx = regexp.MustCompile(`^(\d+)((?:\|REQ)?(?:\|DEPS\d+)*)\s+(.+)$`)
 
-var needsRx = regexp.MustCompile(`\|NEEDS(\d+)`)
+var depsRx = regexp.MustCompile(`\|DEPS(\d+)`)
 
-func parseSubIssuePrefix(title string) subIssuePrefix {
+var startsWithDigitRx = regexp.MustCompile(`^\d`)
+
+func parseSubIssuePrefix(title string) (subIssuePrefix, error) {
+	if !startsWithDigitRx.MatchString(title) {
+		return subIssuePrefix{title: title}, nil
+	}
+
 	m := prefixRx.FindStringSubmatch(title)
 	if m == nil {
-		return subIssuePrefix{title: title}
+		return subIssuePrefix{}, fmt.Errorf("title starts with a digit but is not a valid prefix (expected ID(|REQ)?(|DEPS<N>)* <title>)")
 	}
 
 	id, _ := strconv.Atoi(m[1])
@@ -81,12 +91,15 @@ func parseSubIssuePrefix(title string) subIssuePrefix {
 		hasPrefix: true,
 	}
 
-	for _, nm := range needsRx.FindAllStringSubmatch(flags, -1) {
+	for _, nm := range depsRx.FindAllStringSubmatch(flags, -1) {
 		n, _ := strconv.Atoi(nm[1])
+		if n == id {
+			return subIssuePrefix{}, fmt.Errorf("sub-issue %d depends on itself", id)
+		}
 		p.needs = append(p.needs, n)
 	}
 
-	return p
+	return p, nil
 }
 
 // setupSubIssueDependencies parses sub-issue title prefixes, creates dependency
@@ -96,6 +109,10 @@ func setupSubIssueDependencies(q q, parentID string) error {
 	children, err := getChildIssues(q, parentID)
 	if err != nil {
 		return fmt.Errorf("fetching sub-issues: %w", err)
+	}
+	fmt.Printf("  fetched %d sub-issues:\n", len(children))
+	for _, child := range children {
+		fmt.Printf("    - %s %q\n", child.id, child.title)
 	}
 	if len(children) == 0 {
 		return nil
@@ -110,7 +127,10 @@ func setupSubIssueDependencies(q q, parentID string) error {
 	idMap := map[int]string{} // numeric prefix ID -> Linear issue ID
 
 	for _, child := range children {
-		p := parseSubIssuePrefix(child.title)
+		p, err := parseSubIssuePrefix(child.title)
+		if err != nil {
+			return fmt.Errorf("parsing sub-issue %q: %w", child.title, err)
+		}
 		items = append(items, parsed{sub: child, prefix: p})
 		if p.hasPrefix && p.id > 0 {
 			idMap[p.id] = child.id
@@ -131,15 +151,15 @@ func setupSubIssueDependencies(q q, parentID string) error {
 			}
 		}
 
-		// NEEDS: this sub-issue depends on another (the other blocks this one).
+		// DEPS: this sub-issue depends on another (the other blocks this one).
 		for _, needID := range item.prefix.needs {
 			blockerLinearID, ok := idMap[needID]
 			if !ok {
-				return fmt.Errorf("sub-issue %d NEEDS %d, but no sub-issue with that ID found", item.prefix.id, needID)
+				return fmt.Errorf("sub-issue %d DEPS %d, but no sub-issue with that ID found", item.prefix.id, needID)
 			}
 			fmt.Printf("  sub-issue %d depends on sub-issue %d\n", item.prefix.id, needID)
 			if err := createBlocksRelation(q, blockerLinearID, item.sub.id); err != nil {
-				return fmt.Errorf("creating NEEDS relation for sub-issue %d -> %d: %w", item.prefix.id, needID, err)
+				return fmt.Errorf("creating DEPS relation for sub-issue %d -> %d: %w", item.prefix.id, needID, err)
 			}
 		}
 

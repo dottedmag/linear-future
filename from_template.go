@@ -32,7 +32,10 @@ func createFromDueTemplates(q q, teamID string, today time.Time) error {
 			continue
 		}
 		if templateMatchesSchedule(tmpl.description, today) {
+			fmt.Printf("Template %q is due today\n", tmpl.name)
 			dueTemplates = append(dueTemplates, tmpl)
+		} else {
+			fmt.Printf("Template %q is not due today\n", tmpl.name)
 		}
 	}
 	if len(dueTemplates) == 0 {

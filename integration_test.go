@@ -449,7 +449,7 @@ func TestIntegration(t *testing.T) {
 		parentID := testCreateIssueFromTemplate(t, q, tmplID, teamID)
 
 		child1ID := testCreateChildIssue(t, q, teamID, parentID, "1|REQ "+testMarker+" First task")
-		child2ID := testCreateChildIssue(t, q, teamID, parentID, "2|NEEDS1 "+testMarker+" Second task")
+		child2ID := testCreateChildIssue(t, q, teamID, parentID, "2|DEPS1 "+testMarker+" Second task")
 		testCreateChildIssue(t, q, teamID, parentID, testMarker+" No prefix task")
 
 		assert.NoError(t, setupSubIssueDependencies(q, parentID))
@@ -468,7 +468,7 @@ func TestIntegration(t *testing.T) {
 		}
 		assert.True(t, foundChild1BlocksParent, "expected child1 blocks parent relation")
 
-		// Verify relations: child1 blocks child2 (NEEDS1).
+		// Verify relations: child1 blocks child2 (DEPS1).
 		child2Rels := testGetIssueRelations(t, q, child2ID)
 		foundChild1BlocksChild2 := false
 		for _, r := range child2Rels {
@@ -483,7 +483,7 @@ func TestIntegration(t *testing.T) {
 		name := testMarker + " templatedata"
 		subTitles := []string{
 			"1|REQ " + testMarker + " First task",
-			"2|NEEDS1 " + testMarker + " Second task",
+			"2|DEPS1 " + testMarker + " Second task",
 			testMarker + " Plain task",
 		}
 		tmplID := testCreateTemplateWithSubIssues(t, q, teamID, name, "Recurrence: daily", subTitles)
