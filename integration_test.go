@@ -454,7 +454,7 @@ func TestIntegration(t *testing.T) {
 			t.Fatal("template should be in created-today map after first issue")
 		}
 
-		// Simulate what createRecurringIssuesFromTemplates does: skip if already created.
+		// Simulate what createFromDueTemplates does: skip if already created.
 		templates, err := getTemplates(q)
 		if err != nil {
 			t.Fatalf("getTemplates: %v", err)
