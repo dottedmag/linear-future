@@ -47,6 +47,11 @@ func testGetTeamID(t *testing.T, q q) string {
 
 func testCreateTemplate(t *testing.T, q q, teamID, name, description string) string {
 	t.Helper()
+	return testCreateTemplateWithSubIssues(t, q, teamID, name, description, nil)
+}
+
+func testCreateTemplateWithSubIssues(t *testing.T, q q, teamID, name, description string, subIssueTitles []string) string {
+	t.Helper()
 	mutation := `mutation ($input: TemplateCreateInput!) {
 		templateCreate(input: $input) {
 			success
@@ -56,6 +61,13 @@ func testCreateTemplate(t *testing.T, q q, teamID, name, description string) str
 	templateData := map[string]any{
 		"title":  name,
 		"teamId": teamID,
+	}
+	if len(subIssueTitles) > 0 {
+		children := make([]map[string]any, len(subIssueTitles))
+		for i, title := range subIssueTitles {
+			children[i] = map[string]any{"title": title}
+		}
+		templateData["children"] = children
 	}
 	tdJSON, _ := json.Marshal(templateData)
 	input := map[string]any{
@@ -465,5 +477,22 @@ func TestIntegration(t *testing.T) {
 			}
 		}
 		assert.True(t, foundChild1BlocksChild2, "expected child1 blocks child2 relation")
+	})
+
+	t.Run("TemplateDataParsing", func(t *testing.T) {
+		name := testMarker + " templatedata"
+		subTitles := []string{
+			"1|REQ " + testMarker + " First task",
+			"2|NEEDS1 " + testMarker + " Second task",
+			testMarker + " Plain task",
+		}
+		tmplID := testCreateTemplateWithSubIssues(t, q, teamID, name, "Recurrence: daily", subTitles)
+
+		templates, err := getTemplates(q)
+		assert.NoError(t, err)
+
+		found := findTemplate(t, templates, tmplID)
+		assert.Equal(t, name, found.issueTitle)
+		assert.Equal(t, subTitles, found.subIssueTitles)
 	})
 }

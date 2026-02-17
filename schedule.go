@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -52,29 +51,6 @@ type schedule struct {
 	month   time.Month   // scheduleMonthDay, scheduleMonthLast
 	date    time.Time    // scheduleAt
 	raw     string       // scheduleMalformed
-}
-
-func (s schedule) String() string {
-	switch s.kind {
-	case scheduleDaily:
-		return "Daily"
-	case scheduleWeekday:
-		return fmt.Sprintf("Every %s", s.weekday)
-	case scheduleDayOfMonth:
-		return fmt.Sprintf("Day %d of every month", s.day)
-	case scheduleLastDayOfMonth:
-		return "Last day of every month"
-	case scheduleMonthDay:
-		return fmt.Sprintf("%s %d", s.month, s.day)
-	case scheduleMonthLast:
-		return fmt.Sprintf("Last day of %s", s.month)
-	case scheduleAt:
-		return fmt.Sprintf("Once on %s", s.date.Format("2006-01-02"))
-	case scheduleMalformed:
-		return fmt.Sprintf("MALFORMED: %s", s.raw)
-	default:
-		return "Unknown"
-	}
 }
 
 func (s schedule) matches(date time.Time) bool {

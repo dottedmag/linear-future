@@ -8,7 +8,7 @@ import (
 
 func realMain() int {
 	listTemplates := flag.Bool("list-templates", false, "List all templates")
-	triggerDates := flag.Bool("trigger-dates", false, "Show upcoming trigger dates for all templates")
+	list := flag.Bool("list", false, "Show template schedules, trigger dates, and sub-issue validation")
 	flag.Parse()
 
 	token := os.Getenv("LINEAR_API_KEY")
@@ -16,8 +16,8 @@ func realMain() int {
 	if *listTemplates {
 		return runListTemplates(token)
 	}
-	if *triggerDates {
-		return runTriggerDates(token)
+	if *list {
+		return runList(token)
 	}
 
 	if token == "" || flag.NArg() < 1 {

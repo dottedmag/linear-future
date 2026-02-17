@@ -7,6 +7,49 @@ import (
 	"strings"
 )
 
+type subIssueProblem struct {
+	title   string
+	problem string
+}
+
+// validateSubIssuePrefixes checks sub-issue titles for structural problems:
+// duplicate IDs and dangling NEEDS references.
+func validateSubIssuePrefixes(titles []string) []subIssueProblem {
+	var problems []subIssueProblem
+	ids := map[int]bool{}
+
+	type parsed struct {
+		title  string
+		prefix subIssuePrefix
+	}
+	var items []parsed
+	for _, title := range titles {
+		p := parseSubIssuePrefix(title)
+		items = append(items, parsed{title: title, prefix: p})
+		if !p.hasPrefix {
+			continue
+		}
+		if ids[p.id] {
+			problems = append(problems, subIssueProblem{title: title, problem: fmt.Sprintf("duplicate ID %d", p.id)})
+		}
+		ids[p.id] = true
+	}
+	for _, item := range items {
+		if !item.prefix.hasPrefix {
+			continue
+		}
+		for _, need := range item.prefix.needs {
+			if !ids[need] {
+				problems = append(problems, subIssueProblem{
+					title:   item.title,
+					problem: fmt.Sprintf("sub-issue %d NEEDS %d, but no sub-issue with that ID", item.prefix.id, need),
+				})
+			}
+		}
+	}
+	return problems
+}
+
 // subIssuePrefix represents the parsed prefix from a sub-issue title.
 type subIssuePrefix struct {
 	id       int    // numeric ID of this sub-issue (0 if no prefix)

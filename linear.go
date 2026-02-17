@@ -164,10 +164,12 @@ func updateTitle(q q, issueID, newTitle string) error {
 }
 
 type issueTemplate struct {
-	id          string
-	name        string
-	description string
-	teamID      string
+	id             string
+	name           string
+	description    string
+	teamID         string
+	issueTitle     string
+	subIssueTitles []string
 }
 
 func getTemplates(q q) ([]issueTemplate, error) {
@@ -176,6 +178,7 @@ func getTemplates(q q) ([]issueTemplate, error) {
 			id
 			name
 			description
+			templateData
 			team {
 				id
 			}
@@ -190,10 +193,11 @@ func getTemplates(q q) ([]issueTemplate, error) {
 	var resp struct {
 		Data struct {
 			Templates []struct {
-				ID          string
-				Name        string
-				Description string
-				Team        struct {
+				ID           string
+				Name         string
+				Description  string
+				TemplateData json.RawMessage
+				Team         struct {
 					ID string
 				}
 			}
@@ -211,9 +215,41 @@ func getTemplates(q q) ([]issueTemplate, error) {
 
 	templates := make([]issueTemplate, 0, len(resp.Data.Templates))
 	for _, t := range resp.Data.Templates {
-		templates = append(templates, issueTemplate{id: t.ID, name: t.Name, description: t.Description, teamID: t.Team.ID})
+		tmpl := issueTemplate{
+			id:          t.ID,
+			name:        t.Name,
+			description: t.Description,
+			teamID:      t.Team.ID,
+		}
+		tmpl.issueTitle, tmpl.subIssueTitles = parseTemplateData(t.TemplateData)
+		templates = append(templates, tmpl)
 	}
 	return templates, nil
+}
+
+func parseTemplateData(data json.RawMessage) (string, []string) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	// templateData is double-encoded: a JSON string containing JSON.
+	var inner string
+	if err := json.Unmarshal(data, &inner); err != nil {
+		return "", nil
+	}
+	var td struct {
+		Title    string `json:"title"`
+		Children []struct {
+			Title string `json:"title"`
+		} `json:"children"`
+	}
+	if err := json.Unmarshal([]byte(inner), &td); err != nil {
+		return "", nil
+	}
+	titles := make([]string, 0, len(td.Children))
+	for _, ch := range td.Children {
+		titles = append(titles, ch.Title)
+	}
+	return td.Title, titles
 }
 
 func getTemplateCreatedIssuesForDay(q q, teamID string, dayStart time.Time) (map[string]bool, error) {
